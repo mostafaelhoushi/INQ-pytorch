@@ -21,6 +21,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 
+from freeze import freeze_weights, freeze_biases, freeze_gamma, freeze_beta
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -60,6 +61,14 @@ parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='only evaluate model on validation set')
 parser.add_argument('--pretrained', dest='pretrained', default=True, type=lambda x:bool(distutils.util.strtobool(x)), 
                     help='use pre-trained model')
+parser.add_argument('--freeze-weights', dest='freeze_weights', action='store_true',
+                    help='freeze weights of conv and linear layers')
+parser.add_argument('--freeze-biases', dest='freeze_biases', action='store_true',
+                    help='freeze biases of convolution and fully-connected layers')
+parser.add_argument('--freeze-gamma', dest='freeze_gamma', action='store_true',
+                    help='freeze gamma of batchnorm layers')
+parser.add_argument('--freeze-beta', dest='freeze_beta', action='store_true',
+                    help='freeze beta of batchnorm layers')
 parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--rank', default=-1, type=int,
@@ -158,6 +167,15 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
+
+    if args.freeze_weights:
+        model = freeze_weights(model)
+    if args.freeze_biases:
+        model = freeze_biases(model)
+    if args.freeze_gamma:
+        model = freeze_gamma(model)
+    if args.freeze_beta:
+        model = freeze_beta(model)
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
