@@ -6,6 +6,7 @@ import time
 import warnings
 import csv
 import argparse
+from contextlib import redirect_stdout
 
 import inq
 import torch
@@ -94,6 +95,8 @@ parser.add_argument('--iterative-steps', type=float, nargs='+', default=[0.5, 0.
                     help='a list of float numbers representing the portion of quanntized weights in each iterative step')
 parser.add_argument('--log_dir', type=str, default=None,
                     help='directory to log the checkpoint and training log to')
+parser.add_argument('--print-weights', default=True, type=lambda x:bool(distutils.util.strtobool(x)), 
+                    help='For printing the weights of Model (default: True)')
 
 best_acc1 = 0
 n_iter = 0
@@ -324,6 +327,18 @@ def main_worker(gpu, ngpus_per_node, args):
             # remember best acc@1 and save checkpoint
             is_best = acc1 > best_acc1
             best_acc1 = max(acc1, best_acc1)
+
+            if (args.print_weights):
+                os.makedirs(os.path.join(args.log_dir, 'weights_logs'), exist_ok=True)
+                with open(os.path.join(args.log_dir, 'weights_logs', 'weights_log_' + str(campaign) + '_' + str(epoch) + '.txt'), 'w') as weights_log_file:
+                    with redirect_stdout(weights_log_file):
+                        # Log model's state_dict
+                        print("Model's state_dict:")
+                        # TODO: Use checkpoint above
+                        for param_tensor in model.state_dict():
+                            print(param_tensor, "\t", model.state_dict()[param_tensor].size())
+                            print(model.state_dict()[param_tensor])
+                            print("")
 
             save_checkpoint({
                 'state_dict': model.state_dict(),
