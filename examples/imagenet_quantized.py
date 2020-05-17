@@ -70,6 +70,8 @@ parser.add_argument('--freeze-gamma', dest='freeze_gamma', action='store_true',
                     help='freeze gamma of batchnorm layers')
 parser.add_argument('--freeze-beta', dest='freeze_beta', action='store_true',
                     help='freeze beta of batchnorm layers')
+parser.add_argument('--no-backward-pass', dest='no_backward_pass', action='store_true',
+                    help='during training do not do a backward pass (just update batchnorm running_mean & running_var')
 parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--rank', default=-1, type=int,
@@ -284,22 +286,23 @@ def main_worker(gpu, ngpus_per_node, args):
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
-    if args.evaluate:
-        validate(val_loader, model, criterion, args)
-        return
-
     if args.quantize:
         quantization_epochs = len(args.iterative_steps)
         quantization_scheduler = inq.INQScheduler(optimizer, args.iterative_steps, strategy="pruning")
     else:
         quantization_epochs = 1
 
-    validate(val_loader, model, criterion, args)
+    #validate(val_loader, model, criterion, args)
     train_log = []
 
-    with open(os.path.join(args.log_dir, "train_log.csv"), "w") as train_log_file:
-        train_log_csv = csv.writer(train_log_file)
-        train_log_csv.writerow(['epoch', 'train_loss', 'train_top1_acc', 'train_top5_acc', 'train_time', 'test_loss', 'test_top1_acc', 'test_top5_acc', 'test_time', 'cumulative_time'])
+    if args.evaluate:
+        with open(os.path.join(args.log_dir, "test_log.csv"), "w") as test_log_file:
+            test_log_csv = csv.writer(test_log_file)
+            test_log_csv.writerow(['test_loss', 'test_top1_acc', 'test_top5_acc', 'test_time', 'cumulative_time'])
+    else:   
+        with open(os.path.join(args.log_dir, "train_log.csv"), "w") as train_log_file:
+            train_log_csv = csv.writer(train_log_file)
+            train_log_csv.writerow(['epoch', 'train_loss', 'train_top1_acc', 'train_top5_acc', 'train_time', 'test_loss', 'test_top1_acc', 'test_top5_acc', 'test_time', 'cumulative_time'])
 
     start_log_time = time.time()
 
@@ -307,30 +310,18 @@ def main_worker(gpu, ngpus_per_node, args):
         inq.reset_lr_scheduler(scheduler)
         if args.quantize:
             quantization_scheduler.step()
-        for epoch in range(args.start_epoch, args.epochs):
-            if args.distributed:
-                train_sampler.set_epoch(epoch)
-
-            # train for one epoch
-            train_epoch_log = train(train_loader, model, criterion, optimizer, epoch, args)
-            scheduler.step()
-
-            # evaluate on validation set
+            
+        if args.evaluate:
             val_epoch_log = validate(val_loader, model, criterion, args)
-            acc1 = val_epoch_log[2]
 
             # append to log
-            with open(os.path.join(args.log_dir, "train_log.csv"), "a") as train_log_file:
-                train_log_csv = csv.writer(train_log_file)
-                train_log_csv.writerow(((epoch,) + train_epoch_log + val_epoch_log + (time.time() - start_log_time,))) 
-
-            # remember best acc@1 and save checkpoint
-            is_best = acc1 > best_acc1
-            best_acc1 = max(acc1, best_acc1)
-
+            with open(os.path.join(args.log_dir, "test_log.csv"), "a") as test_log_file:
+                test_log_csv = csv.writer(test_log_file)
+                test_log_csv.writerow((val_epoch_log + (time.time() - start_log_time,))) 
+                
             if (args.print_weights):
                 os.makedirs(os.path.join(args.log_dir, 'weights_logs'), exist_ok=True)
-                with open(os.path.join(args.log_dir, 'weights_logs', 'weights_log_' + str(campaign) + '_' + str(epoch) + '.txt'), 'w') as weights_log_file:
+                with open(os.path.join(args.log_dir, 'weights_logs', 'weights_log_' + str(campaign) + '.txt'), 'w') as weights_log_file:
                     with redirect_stdout(weights_log_file):
                         # Log model's state_dict
                         print("Model's state_dict:")
@@ -344,6 +335,45 @@ def main_worker(gpu, ngpus_per_node, args):
                 'state_dict': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
             }, False, filename=os.path.join(args.log_dir, 'quantized_{}_pruning.pth.tar'.format(args.arch)))
+
+        else:
+            for epoch in range(args.start_epoch, args.epochs):
+                if args.distributed:
+                    train_sampler.set_epoch(epoch)
+    
+                # train for one epoch
+                train_epoch_log = train(train_loader, model, criterion, optimizer, epoch, args)
+                scheduler.step()
+    
+                # evaluate on validation set
+                val_epoch_log = validate(val_loader, model, criterion, args)
+                acc1 = val_epoch_log[2]
+    
+                # append to log
+                with open(os.path.join(args.log_dir, "train_log.csv"), "a") as train_log_file:
+                    train_log_csv = csv.writer(train_log_file)
+                    train_log_csv.writerow(((epoch,) + train_epoch_log + val_epoch_log + (time.time() - start_log_time,))) 
+    
+                # remember best acc@1 and save checkpoint
+                is_best = acc1 > best_acc1
+                best_acc1 = max(acc1, best_acc1)
+    
+                if (args.print_weights):
+                    os.makedirs(os.path.join(args.log_dir, 'weights_logs'), exist_ok=True)
+                    with open(os.path.join(args.log_dir, 'weights_logs', 'weights_log_' + str(campaign) + '_' + str(epoch) + '.txt'), 'w') as weights_log_file:
+                        with redirect_stdout(weights_log_file):
+                            # Log model's state_dict
+                            print("Model's state_dict:")
+                            # TODO: Use checkpoint above
+                            for param_tensor in model.state_dict():
+                                print(param_tensor, "\t", model.state_dict()[param_tensor].size())
+                                print(model.state_dict()[param_tensor])
+                                print("")
+    
+                save_checkpoint({
+                    'state_dict': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                }, False, filename=os.path.join(args.log_dir, 'quantized_{}_pruning.pth.tar'.format(args.arch)))
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
@@ -377,9 +407,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         top5.update(acc5[0], input.size(0))
 
         # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if args.no_backward_pass is False:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
